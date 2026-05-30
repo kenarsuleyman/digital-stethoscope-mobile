@@ -39,6 +39,8 @@ local.properties
 .claude/scheduled_tasks.lock
 # Scratch screenshots
 /_*.png
+# Parity test audio fixtures (large; keep golden.json + rn_results.json)
+test_wavs/*.wav
 
 # node.js
 #

@@ -62,6 +62,23 @@ class AudioDevicesModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun getMemoryInfo(promise: Promise) {
+    try {
+      val am = reactContext.getSystemService(Context.ACTIVITY_SERVICE)
+        as android.app.ActivityManager
+      val mi = android.app.ActivityManager.MemoryInfo()
+      am.getMemoryInfo(mi)
+      val m = Arguments.createMap()
+      m.putDouble("totalMem", mi.totalMem.toDouble())
+      m.putDouble("availMem", mi.availMem.toDouble())
+      m.putInt("cpuCores", Runtime.getRuntime().availableProcessors())
+      promise.resolve(m)
+    } catch (e: Exception) {
+      promise.reject("ERR_MEM", e.message, e)
+    }
+  }
+
+  @ReactMethod
   fun listInputs(promise: Promise) {
     try {
       promise.resolve(inputsArray())
