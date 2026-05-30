@@ -86,7 +86,7 @@ export function WaveformChart({
 
   let overlay: string | null = null;
   if (isRecording) overlay = null;
-  else if (!active) overlay = 'Sinyal bekleniyor...';
+  else if (!active) overlay = 'Stetoskop bağlı değil';
   else if (!samples || samples.length === 0) overlay = 'Sinyal bekleniyor...';
   else if (!hasBeat) overlay = 'Kalp atışı algılanmadı';
 

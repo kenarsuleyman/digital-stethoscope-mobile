@@ -1,18 +1,18 @@
 // Always-on audio capture for React Native, ported from the web app's
 // StethoscopeMonitor. The web version streamed Web Audio AudioWorklet frames
-// into a ring buffer; here we stream raw PCM frames from
-// @picovoice/react-native-voice-processor instead. "Recording" is still just a
-// flag that copies the next N seconds of the same stream into a buffer.
+// into a ring buffer; here we stream raw PCM frames from the native
+// AudioCapture module (AudioRecord with AudioSource.UNPROCESSED — no OS
+// high-pass / AGC / noise-suppression, which would otherwise strip the
+// low-frequency heart sounds). "Recording" is just a flag that copies the next
+// N seconds of the same stream into a separate buffer.
 //
 // On Android a connected USB Audio Class stethoscope is routed as the active
 // mic input, so the default capture path picks it up.
 
-import {
-  VoiceProcessor,
-  type VoiceProcessorError,
-} from '@picovoice/react-native-voice-processor';
+import { type EmitterSubscription } from 'react-native';
 
 import { RECORDING_LENGTH_S } from './constants';
+import { RawRecorder } from './rawRecorder';
 import type { Analysis, Recording } from './types';
 
 export type MonitorOpts = {
@@ -34,7 +34,6 @@ export type MonitorState = 'idle' | 'starting' | 'monitoring' | 'stopped';
 export class StethoscopeMonitor {
   state: MonitorState = 'idle';
 
-  private vp = VoiceProcessor.instance;
   private sampleRate = 16000;
 
   private ring: Float32Array = new Float32Array(0);
@@ -54,8 +53,7 @@ export class StethoscopeMonitor {
     | null = null;
 
   private frameListener = (frame: number[]) => this.onFrame(frame);
-  private errorListener = (e: VoiceProcessorError) =>
-    this.opts.onError?.(new Error(e.message ?? String(e)));
+  private frameSub: EmitterSubscription | null = null;
 
   constructor(private opts: MonitorOpts = {}) {}
 
@@ -73,9 +71,15 @@ export class StethoscopeMonitor {
     this.ringWrite = 0;
     this.ringFilled = false;
 
-    this.vp.addFrameListener(this.frameListener);
-    this.vp.addErrorListener(this.errorListener);
-    await this.vp.start(this.opts.frameLength ?? 512, this.sampleRate);
+    this.frameSub = RawRecorder.addFrameListener(this.frameListener);
+    try {
+      await RawRecorder.start(this.opts.frameLength ?? 512, this.sampleRate);
+    } catch (e) {
+      this.frameSub?.remove();
+      this.frameSub = null;
+      this.state = 'idle';
+      throw e;
+    }
 
     const cadence = this.opts.analyzeEveryMs ?? 1000;
     this.analysisTimer = setInterval(() => this.runAnalysis(), cadence);
@@ -97,10 +101,10 @@ export class StethoscopeMonitor {
     this.recording = false;
     this.recordBuffer = new Float32Array(0);
 
-    this.vp.removeFrameListener(this.frameListener);
-    this.vp.removeErrorListener(this.errorListener);
+    this.frameSub?.remove();
+    this.frameSub = null;
     try {
-      if (await this.vp.isRecording()) await this.vp.stop();
+      if (await RawRecorder.isRecording()) await RawRecorder.stop();
     } catch {
       // best-effort
     }
@@ -219,15 +223,5 @@ export class StethoscopeMonitor {
     } catch {
       // Swallow — don't kill the monitor on analysis errors.
     }
-  }
-}
-
-// Whether a record-audio permission has already been granted, per the
-// voice processor (it requests at start() if not).
-export async function hasMicPermission(): Promise<boolean> {
-  try {
-    return await VoiceProcessor.instance.hasRecordAudioPermission();
-  } catch {
-    return false;
   }
 }

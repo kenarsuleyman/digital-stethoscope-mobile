@@ -18,7 +18,6 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { AnalyzeButton } from './src/components/AnalyzeButton';
-import { DeviceCard } from './src/components/DeviceCard';
 import { FileUploadPanel } from './src/components/FileUploadPanel';
 import { FilterComparison } from './src/components/FilterComparison';
 import { Header } from './src/components/Header';
@@ -27,6 +26,11 @@ import { ResultPanel } from './src/components/ResultPanel';
 import { WaveformChart } from './src/components/WaveformChart';
 import { StethoscopeMonitor } from './src/lib/audio/capture';
 import { RECORDING_LENGTH_S, SEGMENT_LENGTH_S } from './src/lib/audio/constants';
+import {
+  findStethoscope,
+  subscribeDeviceChanges,
+  type DeviceMatch,
+} from './src/lib/audio/devices';
 import type { Analysis, Recording } from './src/lib/audio/types';
 import { analyzeWindow, estimateBPM } from './src/lib/bpm';
 import { predictFromRecording, type Prediction } from './src/lib/model/predict';
@@ -49,7 +53,7 @@ async function requestMic(): Promise<boolean> {
 }
 
 export default function App() {
-  const [deviceLabel, setDeviceLabel] = useState<string | null>(null);
+  const [device, setDevice] = useState<DeviceMatch | null>(null);
   const [monitoring, setMonitoring] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -73,66 +77,98 @@ export default function App() {
   const lastLiveAt = useRef(0);
   const lastRecAt = useRef(0);
 
-  const startMonitor = useCallback(async () => {
+  // Look for a connected USB stethoscope. Keep the same `device` reference when
+  // the connection status hasn't changed so the monitor effect doesn't restart.
+  const scan = useCallback(async () => {
     setScanning(true);
-    setScanError(null);
-    const ok = await requestMic();
-    if (!ok) {
-      setScanError('Mikrofon izni verilmedi. Ayarlardan izin verin.');
-      setScanning(false);
-      return;
-    }
-    await monitorRef.current?.stop();
-
-    const monitor = new StethoscopeMonitor({
-      sampleRate: SAMPLE_RATE,
-      onChunk: () => {
-        // The monitor already keeps a ring buffer; just snapshot the last few
-        // seconds for display at ~15 fps instead of rebuilding a buffer on
-        // every audio frame.
-        const now = Date.now();
-        if (now - lastLiveAt.current < 66) return;
-        lastLiveAt.current = now;
-        const m = monitorRef.current;
-        if (m) setLiveSamples(m.snapshot(LIVE_DISPLAY_S));
-      },
-      onAnalysis: (a) => setAnalysis(a),
-      onRecordingProgress: (s) => setRecordElapsedS(s),
-      onRecordingChunk: (acc) => {
-        const now = Date.now();
-        if (now - lastRecAt.current < 66) return;
-        lastRecAt.current = now;
-        setRecordSamples(acc);
-      },
-      onRecordingComplete: (rec) => {
-        setRecording(false);
-        setCompleted(rec);
-      },
-      onError: (e) => setScanError(e.message),
-    });
-    monitor.setAnalyzer(analyzeWindow);
-    monitorRef.current = monitor;
     try {
-      await monitor.start();
-      setMonitoring(true);
-      setDeviceLabel('Teensy / Mikrofon • 16 kHz • 16-bit');
+      const match = await findStethoscope();
+      setScanError(null);
+      setDevice((prev) =>
+        (prev?.label ?? null) === (match?.label ?? null) ? prev : match,
+      );
     } catch (e) {
       setScanError(e instanceof Error ? e.message : String(e));
-      setMonitoring(false);
     } finally {
       setScanning(false);
     }
   }, []);
 
+  // Scan on mount and re-scan whenever an audio device is plugged/unplugged.
   useEffect(() => {
-    void startMonitor();
+    void scan();
+    const unsub = subscribeDeviceChanges(() => {
+      void scan();
+    });
+    return unsub;
+  }, [scan]);
+
+  // Run the capture monitor only while a USB stethoscope is connected.
+  useEffect(() => {
+    if (!device) {
+      const prev = monitorRef.current;
+      monitorRef.current = null;
+      void prev?.stop();
+      setMonitoring(false);
+      setRecording(false);
+      setLiveSamples(null);
+      setAnalysis({ bpm: null, hasBeat: false, rms: 0 });
+      return;
+    }
+
+    let cancelled = false;
+    let monitor: StethoscopeMonitor | null = null;
+    (async () => {
+      const ok = await requestMic();
+      if (!ok) {
+        setScanError('Mikrofon izni verilmedi. Ayarlardan izin verin.');
+        return;
+      }
+      monitor = new StethoscopeMonitor({
+        sampleRate: SAMPLE_RATE,
+        onChunk: () => {
+          // The monitor already keeps a ring buffer; just snapshot the last few
+          // seconds for display at ~15 fps instead of rebuilding a buffer on
+          // every audio frame.
+          const now = Date.now();
+          if (now - lastLiveAt.current < 66) return;
+          lastLiveAt.current = now;
+          const m = monitorRef.current;
+          if (m) setLiveSamples(m.snapshot(LIVE_DISPLAY_S));
+        },
+        onAnalysis: (a) => setAnalysis(a),
+        onRecordingProgress: (s) => setRecordElapsedS(s),
+        onRecordingChunk: (acc) => {
+          const now = Date.now();
+          if (now - lastRecAt.current < 66) return;
+          lastRecAt.current = now;
+          setRecordSamples(acc);
+        },
+        onRecordingComplete: (rec) => {
+          setRecording(false);
+          setCompleted(rec);
+        },
+        onError: (e) => setScanError(e.message),
+      });
+      monitor.setAnalyzer(analyzeWindow);
+      monitorRef.current = monitor;
+      try {
+        await monitor.start();
+        if (!cancelled) setMonitoring(true);
+      } catch (e) {
+        setScanError(e instanceof Error ? e.message : String(e));
+        setMonitoring(false);
+      }
+    })();
+
     return () => {
+      cancelled = true;
       setMonitoring(false);
       const m = monitorRef.current;
       monitorRef.current = null;
       void m?.stop();
     };
-  }, [startMonitor]);
+  }, [device]);
 
   const onToggleRecord = useCallback(() => {
     const monitor = monitorRef.current;
@@ -189,10 +225,8 @@ export default function App() {
     <SafeAreaProvider>
       <StatusBar barStyle="light-content" backgroundColor="#0f766e" />
       <SafeAreaView className="flex-1 bg-zinc-50" edges={['top']}>
-        <Header connected={monitoring} />
+        <Header connected={monitoring} scanning={scanning} onRetry={scan} />
         <ScrollView contentContainerClassName="mx-auto w-full max-w-md p-4 pb-8 gap-4">
-          <DeviceCard deviceLabel={deviceLabel} onRetry={startMonitor} busy={scanning} />
-
           {scanError && (
             <View className="rounded-md bg-amber-50 px-3 py-2">
               <Text className="text-xs text-amber-800">{scanError}</Text>
