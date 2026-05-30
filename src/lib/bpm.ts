@@ -54,26 +54,42 @@ export function analyzeWindow(raw: Float32Array, sampleRate: number): Analysis {
   const filt = bandpass(ds, BPM_BAND_LOW, BPM_BAND_HIGH, TARGET_SR, 4);
   const env = envelope(filt, Math.round(TARGET_SR * 0.05));
 
+  // Decimate the (already-smoothed) envelope before autocorrelation. A heartbeat
+  // is < 4 Hz, so the 4 kHz envelope is ~1000x oversampled for this step —
+  // correlating it directly is ~78M multiply-adds per call and blocks the JS
+  // thread. Average-pool to ~125 Hz: same BPM result, ~1000x cheaper.
+  const DECIM = 32;
+  const decSR = TARGET_SR / DECIM; // 125 Hz
+  const decLen = Math.floor(env.length / DECIM);
+  if (decLen < 8) return { bpm: null, hasBeat: false, rms };
+  const denv = new Float32Array(decLen);
+  for (let i = 0; i < decLen; i++) {
+    let s = 0;
+    const base = i * DECIM;
+    for (let j = 0; j < DECIM; j++) s += env[base + j];
+    denv[i] = s / DECIM;
+  }
+
   // Remove mean.
   let mean = 0;
-  for (let i = 0; i < env.length; i++) mean += env[i];
-  mean /= env.length;
-  for (let i = 0; i < env.length; i++) env[i] -= mean;
+  for (let i = 0; i < decLen; i++) mean += denv[i];
+  mean /= decLen;
+  for (let i = 0; i < decLen; i++) denv[i] -= mean;
 
   // Reference: zero-lag autocorrelation (signal energy).
   let zero = 0;
-  for (let i = 0; i < env.length; i++) zero += env[i] * env[i];
+  for (let i = 0; i < decLen; i++) zero += denv[i] * denv[i];
   if (zero <= 0) return { bpm: null, hasBeat: false, rms };
 
-  const lagMin = Math.floor((60 / BPM_MAX) * TARGET_SR);
-  const lagMax = Math.floor((60 / BPM_MIN) * TARGET_SR);
+  const lagMin = Math.max(1, Math.floor((60 / BPM_MAX) * decSR));
+  const lagMax = Math.min(decLen - 1, Math.floor((60 / BPM_MIN) * decSR));
 
   let bestLag = -1;
   let bestVal = -Infinity;
   for (let lag = lagMin; lag <= lagMax; lag++) {
     let acc = 0;
-    const len = env.length - lag;
-    for (let i = 0; i < len; i++) acc += env[i] * env[i + lag];
+    const len = decLen - lag;
+    for (let i = 0; i < len; i++) acc += denv[i] * denv[i + lag];
     if (acc > bestVal) {
       bestVal = acc;
       bestLag = lag;
@@ -83,7 +99,7 @@ export function analyzeWindow(raw: Float32Array, sampleRate: number): Analysis {
 
   const confidence = bestVal / zero;
   const hasBeat = confidence >= PEAK_CONFIDENCE;
-  const bpm = Math.round((60 * TARGET_SR) / bestLag);
+  const bpm = Math.round((60 * decSR) / bestLag);
   return { bpm: hasBeat ? bpm : null, hasBeat, rms };
 }
 

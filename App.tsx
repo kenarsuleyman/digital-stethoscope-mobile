@@ -70,8 +70,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   const monitorRef = useRef<StethoscopeMonitor | null>(null);
-  const liveBufRef = useRef<Float32Array>(new Float32Array(0));
   const lastLiveAt = useRef(0);
+  const lastRecAt = useRef(0);
 
   const startMonitor = useCallback(async () => {
     setScanning(true);
@@ -83,28 +83,27 @@ export default function App() {
       return;
     }
     await monitorRef.current?.stop();
-    liveBufRef.current = new Float32Array(0);
 
     const monitor = new StethoscopeMonitor({
       sampleRate: SAMPLE_RATE,
-      onChunk: (chunk, sr) => {
-        const cap = Math.round(LIVE_DISPLAY_S * sr);
-        const prev = liveBufRef.current;
-        const merged = new Float32Array(prev.length + chunk.length);
-        merged.set(prev);
-        merged.set(chunk, prev.length);
-        const trimmed =
-          merged.length > cap ? merged.subarray(merged.length - cap) : merged;
-        liveBufRef.current = trimmed;
+      onChunk: () => {
+        // The monitor already keeps a ring buffer; just snapshot the last few
+        // seconds for display at ~15 fps instead of rebuilding a buffer on
+        // every audio frame.
         const now = Date.now();
-        if (now - lastLiveAt.current >= 50) {
-          lastLiveAt.current = now;
-          setLiveSamples(trimmed);
-        }
+        if (now - lastLiveAt.current < 66) return;
+        lastLiveAt.current = now;
+        const m = monitorRef.current;
+        if (m) setLiveSamples(m.snapshot(LIVE_DISPLAY_S));
       },
       onAnalysis: (a) => setAnalysis(a),
       onRecordingProgress: (s) => setRecordElapsedS(s),
-      onRecordingChunk: (acc) => setRecordSamples(acc),
+      onRecordingChunk: (acc) => {
+        const now = Date.now();
+        if (now - lastRecAt.current < 66) return;
+        lastRecAt.current = now;
+        setRecordSamples(acc);
+      },
       onRecordingComplete: (rec) => {
         setRecording(false);
         setCompleted(rec);
