@@ -78,6 +78,12 @@ android {
     compileSdk rootProject.ext.compileSdkVersion
 
     namespace "com.digitalstethoscope"
+
+    // Keep the TFLite model uncompressed so it can be memory-mapped at runtime.
+    androidResources {
+        noCompress += ['tflite']
+    }
+
     defaultConfig {
         applicationId "com.digitalstethoscope"
         minSdkVersion rootProject.ext.minSdkVersion

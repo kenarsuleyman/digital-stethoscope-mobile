@@ -37,6 +37,8 @@ local.properties
 
 # Claude Code local artifacts
 .claude/scheduled_tasks.lock
+# Scratch screenshots
+/_*.png
 
 # node.js
 #
