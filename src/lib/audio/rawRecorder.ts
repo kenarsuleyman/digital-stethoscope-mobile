@@ -8,8 +8,17 @@ import {
   type EmitterSubscription,
 } from 'react-native';
 
+/** What Android actually opened (AudioCaptureModule.start). */
+export type CaptureInfo = {
+  source: string; // UNPROCESSED / VOICE_RECOGNITION / MIC
+  sampleRate: number;
+  bufferBytes: number;
+  routedDevice: string;
+  routedDeviceType: number; // AudioDeviceInfo.TYPE_* (11 = USB device, 22 = USB headset)
+};
+
 type AudioCaptureNative = {
-  start(sampleRate: number, frameLength: number): Promise<void>;
+  start(sampleRate: number, frameLength: number): Promise<CaptureInfo | null>;
   stop(): Promise<void>;
   isRecording(): Promise<boolean>;
 };
@@ -28,9 +37,9 @@ export const RawRecorder = {
   available(): boolean {
     return !!Native;
   },
-  async start(frameLength: number, sampleRate: number): Promise<void> {
+  async start(frameLength: number, sampleRate: number): Promise<CaptureInfo | null> {
     if (!Native) throw new Error('AudioCapture yerel modülü bulunamadı.');
-    await Native.start(sampleRate, frameLength);
+    return (await Native.start(sampleRate, frameLength)) ?? null;
   },
   async stop(): Promise<void> {
     await Native?.stop();

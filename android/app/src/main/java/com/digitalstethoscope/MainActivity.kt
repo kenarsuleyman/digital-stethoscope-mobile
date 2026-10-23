@@ -1,5 +1,7 @@
 package com.digitalstethoscope
 
+import android.os.Bundle
+import android.view.WindowManager
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
@@ -12,6 +14,12 @@ class MainActivity : ReactActivity() {
    * rendering of the component.
    */
   override fun getMainComponentName(): String = "DigitalStethoscope"
+
+  // Keep the screen on: a screen-off pauses the JS thread, which would stall long test recordings.
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+  }
 
   /**
    * Returns the instance of the [ReactActivityDelegate]. We use [DefaultReactActivityDelegate]

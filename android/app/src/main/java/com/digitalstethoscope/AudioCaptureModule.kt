@@ -68,6 +68,7 @@ class AudioCaptureModule(private val reactContext: ReactApplicationContext) :
       val bufSize = maxOf(minBuf, frameLength * 2 * 4)
 
       var rec: AudioRecord? = null
+      var usedSource = -1
       for (src in sources) {
         try {
           val r = AudioRecord(
@@ -76,6 +77,7 @@ class AudioCaptureModule(private val reactContext: ReactApplicationContext) :
           )
           if (r.state == AudioRecord.STATE_INITIALIZED) {
             rec = r
+            usedSource = src
             break
           }
           r.release()
@@ -109,7 +111,20 @@ class AudioCaptureModule(private val reactContext: ReactApplicationContext) :
         }
       }.also { it.start() }
 
-      promise.resolve(null)
+      // Report what Android actually opened (test recordings store this next to the WAV).
+      val info = Arguments.createMap()
+      info.putString("source", when (usedSource) {
+        MediaRecorder.AudioSource.UNPROCESSED -> "UNPROCESSED"
+        MediaRecorder.AudioSource.VOICE_RECOGNITION -> "VOICE_RECOGNITION"
+        MediaRecorder.AudioSource.MIC -> "MIC"
+        else -> usedSource.toString()
+      })
+      info.putInt("sampleRate", rec.sampleRate)
+      info.putInt("bufferBytes", bufSize)
+      val routed = rec.routedDevice
+      info.putString("routedDevice", routed?.productName?.toString() ?: "")
+      info.putInt("routedDeviceType", routed?.type ?: -1)
+      promise.resolve(info)
     } catch (e: Exception) {
       promise.reject("ERR_AUDIO", e.message, e)
     }

@@ -5,6 +5,8 @@ export const TARGET_SR = 4000;
 export const SEGMENT_LENGTH_S = 5;
 export const SEGMENT_SAMPLES = TARGET_SR * SEGMENT_LENGTH_S; // 20_000
 export const RECORDING_LENGTH_S = 10;
+// Bench test recordings (playback of the MATLAB tone / heart-sound sequences, 134 s and 315 s).
+export const TEST_RECORDING_S = 360;
 
 export const BANDPASS_LOW = 25;
 export const BANDPASS_HIGH = 900;

@@ -12,7 +12,7 @@
 import { type EmitterSubscription } from 'react-native';
 
 import { RECORDING_LENGTH_S } from './constants';
-import { RawRecorder } from './rawRecorder';
+import { RawRecorder, type CaptureInfo } from './rawRecorder';
 import type { Analysis, Recording } from './types';
 
 export type MonitorOpts = {
@@ -33,6 +33,8 @@ export type MonitorState = 'idle' | 'starting' | 'monitoring' | 'stopped';
 
 export class StethoscopeMonitor {
   state: MonitorState = 'idle';
+  /** What the native recorder opened (source, rate, routed device); null until started. */
+  captureInfo: CaptureInfo | null = null;
 
   private sampleRate = 16000;
 
@@ -73,7 +75,7 @@ export class StethoscopeMonitor {
 
     this.frameSub = RawRecorder.addFrameListener(this.frameListener);
     try {
-      await RawRecorder.start(this.opts.frameLength ?? 512, this.sampleRate);
+      this.captureInfo = await RawRecorder.start(this.opts.frameLength ?? 512, this.sampleRate);
     } catch (e) {
       this.frameSub?.remove();
       this.frameSub = null;
@@ -123,6 +125,11 @@ export class StethoscopeMonitor {
         this.opts.onRecordingProgress?.(Math.min(elapsed, seconds));
       }, 100);
     }
+  }
+
+  /** Ends the recording now and delivers what was captured so far (test recordings). */
+  finishRecordingNow(): void {
+    if (this.recording) this.finishRecording();
   }
 
   cancelRecording(): void {

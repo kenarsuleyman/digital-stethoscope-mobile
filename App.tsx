@@ -23,9 +23,15 @@ import { FilterComparison } from './src/components/FilterComparison';
 import { Header } from './src/components/Header';
 import { RecordButton } from './src/components/RecordButton';
 import { ResultPanel } from './src/components/ResultPanel';
+import { TestRecordPanel } from './src/components/TestRecordPanel';
 import { WaveformChart } from './src/components/WaveformChart';
 import { StethoscopeMonitor } from './src/lib/audio/capture';
-import { RECORDING_LENGTH_S, SEGMENT_LENGTH_S } from './src/lib/audio/constants';
+import {
+  RECORDING_LENGTH_S,
+  SEGMENT_LENGTH_S,
+  TEST_RECORDING_S,
+} from './src/lib/audio/constants';
+import { saveTestRecording } from './src/lib/audio/testRecording';
 import {
   findStethoscope,
   subscribeDeviceChanges,
@@ -72,6 +78,14 @@ export default function App() {
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState<Prediction | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Bench test recording (long raw capture saved as WAV + JSON, see TestRecordPanel).
+  const [testActive, setTestActive] = useState(false);
+  const [testSaving, setTestSaving] = useState(false);
+  const [testElapsedS, setTestElapsedS] = useState(0);
+  const [testMsg, setTestMsg] = useState<string | null>(null);
+  const testModeRef = useRef(false);
+  const testStartedAt = useRef(new Date());
 
   const monitorRef = useRef<StethoscopeMonitor | null>(null);
   const lastLiveAt = useRef(0);
@@ -137,14 +151,32 @@ export default function App() {
           if (m) setLiveSamples(m.snapshot(LIVE_DISPLAY_S));
         },
         onAnalysis: (a) => setAnalysis(a),
-        onRecordingProgress: (s) => setRecordElapsedS(s),
+        onRecordingProgress: (s) =>
+          testModeRef.current ? setTestElapsedS(s) : setRecordElapsedS(s),
         onRecordingChunk: (acc) => {
+          if (testModeRef.current) return; // minutes of audio: keep showing the live view instead
           const now = Date.now();
           if (now - lastRecAt.current < 66) return;
           lastRecAt.current = now;
           setRecordSamples(acc);
         },
         onRecordingComplete: (rec) => {
+          if (testModeRef.current) {
+            testModeRef.current = false;
+            setTestActive(false);
+            setTestSaving(true);
+            saveTestRecording(rec, monitorRef.current?.captureInfo ?? null, testStartedAt.current)
+              .then((p) =>
+                setTestMsg(
+                  `Kaydedildi (${rec.durationS.toFixed(1)} s, ${
+                    monitorRef.current?.captureInfo?.source ?? '?'
+                  }): ${p}`,
+                ),
+              )
+              .catch((e) => setTestMsg(`Kaydedilemedi: ${e instanceof Error ? e.message : String(e)}`))
+              .finally(() => setTestSaving(false));
+            return;
+          }
           setRecording(false);
           setCompleted(rec);
         },
@@ -187,6 +219,30 @@ export default function App() {
     setRecording(true);
     monitor.startRecording(RECORDING_LENGTH_S);
   }, [recording, monitoring]);
+
+  const onStartTest = useCallback(() => {
+    const monitor = monitorRef.current;
+    if (!monitor || !monitoring || recording || testModeRef.current) return;
+    testModeRef.current = true;
+    testStartedAt.current = new Date();
+    setTestMsg(null);
+    setTestElapsedS(0);
+    setTestActive(true);
+    monitor.startRecording(TEST_RECORDING_S);
+  }, [monitoring, recording]);
+
+  const onStopTest = useCallback(() => {
+    monitorRef.current?.finishRecordingNow(); // -> onRecordingComplete saves the file
+  }, []);
+
+  // Unplugging the stethoscope stops the monitor and drops a running test recording.
+  useEffect(() => {
+    if (!monitoring && testModeRef.current) {
+      testModeRef.current = false;
+      setTestActive(false);
+      setTestMsg('Bağlantı kesildi, test kaydı iptal edildi.');
+    }
+  }, [monitoring]);
 
   const onAnalyze = useCallback(async () => {
     if (!completed) return;
@@ -248,10 +304,20 @@ export default function App() {
             <RecordButton
               recording={recording}
               elapsedS={recordElapsedS}
-              disabled={!monitoring}
+              disabled={!monitoring || testActive}
               onToggle={onToggleRecord}
             />
           </View>
+
+          <TestRecordPanel
+            active={testActive}
+            saving={testSaving}
+            elapsedS={testElapsedS}
+            disabled={!monitoring || recording}
+            message={testMsg}
+            onStart={onStartTest}
+            onStop={onStopTest}
+          />
 
           <AnalyzeButton disabled={!canAnalyze} busy={analyzing} onPress={onAnalyze} />
 
