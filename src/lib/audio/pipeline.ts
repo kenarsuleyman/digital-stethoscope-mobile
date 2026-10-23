@@ -3,9 +3,8 @@
 //
 // The web app used @tensorflow/tfjs for the tile-to-3-channels + bilinear
 // resize. On React Native we feed react-native-fast-tflite a plain Float32Array,
-// so those two ops are reimplemented here in pure JS — numerically matching
-// tf.image.resizeBilinear (half-pixel-centers = false, align_corners = false,
-// which is tfjs's default) so model results stay identical to web.
+// so those two ops are reimplemented here in pure JS — numerically matching the
+// training pipeline (PIL bilinear resize, see resizeBilinearTo3ch).
 
 import {
   BANDPASS_HIGH,
@@ -99,39 +98,63 @@ export function processSegment(seg: Segment): MelSpec {
   return logMelSpectrogram(filtered, TARGET_SR);
 }
 
-// Bilinear resize of a single-channel (h x w) grid to (size x size), matching
-// tf.image.resizeBilinear with align_corners=false / half_pixel_centers=false
-// (tfjs default): src = dst * (inSize / outSize).
+// Resampling coefficients of PIL's Image.resize(..., Image.BILINEAR) (Resample.c precompute_coeffs):
+// pixel centers at (i + 0.5) * scale, triangle filter with support max(scale, 1), weights normalized.
+function pilCoeffs(inSize: number, outSize: number): { min: number[]; k: number[][] } {
+  const scale = inSize / outSize;
+  const filterscale = Math.max(scale, 1);
+  const support = 1.0 * filterscale;
+  const mins: number[] = [];
+  const ks: number[][] = [];
+  for (let xx = 0; xx < outSize; xx++) {
+    const center = (xx + 0.5) * scale;
+    const ss = 1 / filterscale;
+    const xmin = Math.max(Math.trunc(center - support + 0.5), 0);
+    const xmax = Math.min(Math.trunc(center + support + 0.5), inSize) - xmin;
+    const k: number[] = [];
+    let ww = 0;
+    for (let x = 0; x < xmax; x++) {
+      const t = Math.abs((x + xmin - center + 0.5) * ss);
+      const w = t < 1 ? 1 - t : 0;
+      k.push(w);
+      ww += w;
+    }
+    mins.push(xmin);
+    ks.push(ww !== 0 ? k.map((w) => w / ww) : k);
+  }
+  return { min: mins, k: ks };
+}
+
+// Bilinear resize of a single-channel (h x w) float grid to (size x size), identical to the training
+// pipeline (PIL Image.fromarray(float32).resize(BILINEAR): horizontal pass, then vertical pass, float32
+// image between the passes), replicated to 3 channels. The earlier tfjs-style resize (align_corners=false,
+// half_pixel_centers=false) shifted the image and changed the model probability by up to 0.27 on its own.
 function resizeBilinearTo3ch(
   src: Float32Array,
   h: number,
   w: number,
   size: number,
 ): Float32Array {
-  const out = new Float32Array(size * size * 3);
-  const scaleY = h / size;
-  const scaleX = w / size;
-  for (let y = 0; y < size; y++) {
-    let sy = y * scaleY;
-    if (sy < 0) sy = 0;
-    const y0 = Math.min(Math.floor(sy), h - 1);
-    const y1 = Math.min(y0 + 1, h - 1);
-    const wy = sy - y0;
+  const cx = pilCoeffs(w, size);
+  const cy = pilCoeffs(h, size);
+  const tmp = new Float32Array(h * size); // horizontal pass: h x size
+  for (let y = 0; y < h; y++) {
     for (let x = 0; x < size; x++) {
-      let sx = x * scaleX;
-      if (sx < 0) sx = 0;
-      const x0 = Math.min(Math.floor(sx), w - 1);
-      const x1 = Math.min(x0 + 1, w - 1);
-      const wx = sx - x0;
-
-      const v00 = src[y0 * w + x0];
-      const v01 = src[y0 * w + x1];
-      const v10 = src[y1 * w + x0];
-      const v11 = src[y1 * w + x1];
-      const top = v00 + (v01 - v00) * wx;
-      const bot = v10 + (v11 - v10) * wx;
-      const v = top + (bot - top) * wy;
-
+      const k = cx.k[x];
+      const x0 = cx.min[x];
+      let s = 0;
+      for (let i = 0; i < k.length; i++) s += src[y * w + x0 + i] * k[i];
+      tmp[y * size + x] = s;
+    }
+  }
+  const out = new Float32Array(size * size * 3);
+  for (let y = 0; y < size; y++) {
+    const k = cy.k[y];
+    const y0 = cy.min[y];
+    for (let x = 0; x < size; x++) {
+      let s = 0;
+      for (let i = 0; i < k.length; i++) s += tmp[(y0 + i) * size + x] * k[i];
+      const v = Math.fround(s);
       // Replicate across 3 channels (RGB), NHWC layout.
       const base = (y * size + x) * 3;
       out[base] = v;

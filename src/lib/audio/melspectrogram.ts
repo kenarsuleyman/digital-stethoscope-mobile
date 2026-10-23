@@ -115,15 +115,13 @@ export function fftRadix2(re: Float32Array, im: Float32Array): void {
   }
 }
 
-// --- STFT (librosa-compatible: center=True, reflect pad, hann window) ------
+// --- STFT (librosa-compatible: center=True, zero pad, hann window) ---------
+// librosa >= 0.10 pads with zeros by default (pad_mode="constant"); the training pipeline used that default.
+// (The earlier reflect padding changed the model probability by up to 0.12 on its own.)
 
-function reflectPad(x: Float32Array, padLen: number): Float32Array {
-  const out = new Float32Array(x.length + 2 * padLen);
-  for (let i = 0; i < padLen; i++) out[i] = x[padLen - i] ?? 0;
+function centerPad(x: Float32Array, padLen: number): Float32Array {
+  const out = new Float32Array(x.length + 2 * padLen); // zeros at both ends
   out.set(x, padLen);
-  for (let i = 0; i < padLen; i++) {
-    out[padLen + x.length + i] = x[x.length - 2 - i] ?? 0;
-  }
   return out;
 }
 
@@ -133,7 +131,7 @@ function stftPower(
   hop: number,
 ): { power: Float32Array; nFrames: number } {
   const padLen = Math.floor(nFft / 2);
-  const padded = reflectPad(x, padLen);
+  const padded = centerPad(x, padLen);
   const nFrames = 1 + Math.floor((padded.length - nFft) / hop);
   const window = hannWindow(nFft);
   const nBins = nFft / 2 + 1;
