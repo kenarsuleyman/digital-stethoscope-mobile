@@ -151,6 +151,45 @@ function pairConjugates(roots: Complex[]): Complex[][] {
   return pairs;
 }
 
+// Steady-state initial conditions of the cascade for a unit step (scipy.signal.sosfilt_zi): per section the
+// lfilter_zi of the biquad, scaled by the DC gain of the sections before it.
+function sosfiltZi(sos: Biquad[]): { z1: number; z2: number }[] {
+  let scale = 1;
+  return sos.map((s) => {
+    // (I - companion(a).T) zi = b[1:] - a[1:] * b0  ->  [[1 + a1, -1], [a2, 1]] zi = [b1 - a1 b0, b2 - a2 b0]
+    const r1 = s.b1 - s.a1 * s.b0;
+    const r2 = s.b2 - s.a2 * s.b0;
+    const z1 = (r1 + r2) / (1 + s.a1 + s.a2);
+    const z2 = r2 - s.a2 * z1;
+    const zi = { z1: scale * z1, z2: scale * z2 };
+    scale *= (s.b0 + s.b1 + s.b2) / (1 + s.a1 + s.a2);
+    return zi;
+  });
+}
+
+// Transposed Direct Form II cascade in float64 with an optional initial state (scipy.signal.sosfilt).
+function sosfilt64(
+  x: Float64Array,
+  sos: Biquad[],
+  init?: { z1: number; z2: number }[],
+): Float64Array {
+  const y = new Float64Array(x.length);
+  const state = sos.map((_, i) => (init ? { ...init[i] } : { z1: 0, z2: 0 }));
+  for (let n = 0; n < x.length; n++) {
+    let v = x[n];
+    for (let i = 0; i < sos.length; i++) {
+      const s = sos[i];
+      const st = state[i];
+      const out = s.b0 * v + st.z1;
+      st.z1 = s.b1 * v - s.a1 * out + st.z2;
+      st.z2 = s.b2 * v - s.a2 * out;
+      v = out;
+    }
+    y[n] = v;
+  }
+  return y;
+}
+
 function sosfilt(x: Float32Array, sos: Biquad[]): Float32Array {
   const y = new Float32Array(x.length);
   const state = sos.map(() => ({ z1: 0, z2: 0 }));
@@ -177,13 +216,31 @@ function reverse(x: Float32Array): Float32Array {
 }
 
 export function sosfiltfilt(x: Float32Array, sos: Biquad[]): Float32Array {
-  // Simple forward-reverse (no edge-padding). scipy's `padtype='odd'` reduces
-  // edge artifacts; for heart-sound segments the boundaries are dominated by
-  // silence so a plain pass is acceptable here.
-  const fwd = sosfilt(x, sos);
-  const rev = reverse(fwd);
-  const revFiltered = sosfilt(rev, sos);
-  return reverse(revFiltered);
+  // Same as scipy.signal.sosfiltfilt (defaults), which the training pipeline used: odd extension of padlen
+  // samples at both ends, steady-state initial conditions scaled by the first sample of each pass, float64.
+  // (The earlier plain forward-backward pass changed the model probability by up to 0.07 on its own.)
+  const nZeroB2 = sos.filter((s) => s.b2 === 0).length;
+  const nZeroA2 = sos.filter((s) => s.a2 === 0).length;
+  const padlen = 3 * (2 * sos.length + 1 - Math.min(nZeroB2, nZeroA2));
+  const n = x.length;
+  if (n <= padlen) {
+    // too short for scipy's default padding: plain forward-backward pass
+    return reverse(sosfilt(reverse(sosfilt(x, sos)), sos));
+  }
+  const ext = new Float64Array(n + 2 * padlen);
+  for (let i = 0; i < padlen; i++) ext[i] = 2 * x[0] - x[padlen - i];
+  for (let i = 0; i < n; i++) ext[padlen + i] = x[i];
+  for (let i = 0; i < padlen; i++) ext[padlen + n + i] = 2 * x[n - 1] - x[n - 2 - i];
+
+  const zi = sosfiltZi(sos);
+  const scaled = (v: number) => zi.map((z) => ({ z1: z.z1 * v, z2: z.z2 * v }));
+  const fwd = sosfilt64(ext, sos, scaled(ext[0]));
+  const rev = fwd.slice().reverse();
+  const back = sosfilt64(rev, sos, scaled(rev[0])).reverse();
+
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = back[padlen + i];
+  return out;
 }
 
 let cachedSOS: { key: string; sos: Biquad[] } | null = null;
