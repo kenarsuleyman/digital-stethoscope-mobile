@@ -47,7 +47,7 @@ function pct(a: number[], p: number): number {
 }
 const r3 = (x: number) => Math.round(x * 1000) / 1000;
 
-export async function runParityTest(): Promise<void> {
+export async function runParityTest(): Promise<{ parity: { class_agreement_pct: number; mean_prob_MAE: number } }> {
   const dir = `${RNFS.ExternalDirectoryPath}/test_wavs`;
   const outPath = `${RNFS.ExternalDirectoryPath}/rn_results.json`;
   console.log('[PARITY] reading golden from', dir);
@@ -208,4 +208,5 @@ export async function runParityTest(): Promise<void> {
   );
   console.log('[PARITY] wrote', outPath);
   console.log('======================================================');
+  return results;
 }

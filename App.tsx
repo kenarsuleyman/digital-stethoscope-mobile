@@ -22,6 +22,7 @@ import { FileUploadPanel } from './src/components/FileUploadPanel';
 import { FilterComparison } from './src/components/FilterComparison';
 import { Header } from './src/components/Header';
 import { RecordButton } from './src/components/RecordButton';
+import { ParityTestButton } from './src/components/ParityTestButton';
 import { ResultPanel } from './src/components/ResultPanel';
 import { TestRecordPanel } from './src/components/TestRecordPanel';
 import { WaveformChart } from './src/components/WaveformChart';
@@ -318,6 +319,8 @@ export default function App() {
             onStart={onStartTest}
             onStop={onStopTest}
           />
+
+          <ParityTestButton />
 
           <AnalyzeButton disabled={!canAnalyze} busy={analyzing} onPress={onAnalyze} />
 
